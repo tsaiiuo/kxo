@@ -46,6 +46,7 @@ static void raw_mode_enable(void)
     tcgetattr(STDIN_FILENO, &orig_termios);
     atexit(raw_mode_disable);
     struct termios raw = orig_termios;
+    raw.c_iflag &= ~IXON;
     raw.c_lflag &= ~(ECHO | ICANON);
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
 }
@@ -56,7 +57,6 @@ static void listen_keyboard_handler(void)
 {
     int attr_fd = open(XO_DEVICE_ATTR_FILE, O_RDWR);
     char input;
-
     if (read(STDIN_FILENO, &input, 1) == 1) {
         char buf[20];
         switch (input) {
