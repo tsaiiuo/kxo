@@ -94,16 +94,6 @@ static DEFINE_MUTEX(read_lock);
 /* Wait queue to implement blocking I/O from userspace */
 static DECLARE_WAIT_QUEUE_HEAD(rx_wait);
 
-/* Insert the whole chess board into the kfifo buffer */
-static void produce_board(void)
-{
-    unsigned int len = kfifo_in(&rx_fifo, draw_buffer, sizeof(draw_buffer));
-    if (unlikely(len < sizeof(draw_buffer)) && printk_ratelimit())
-        pr_warn("%s: %zu bytes dropped\n", __func__, sizeof(draw_buffer) - len);
-
-    pr_debug("kxo: %s: in %u/%u bytes\n", __func__, len, kfifo_len(&rx_fifo));
-}
-
 /* Mutex to serialize kfifo writers within the workqueue handler */
 static DEFINE_MUTEX(producer_lock);
 
@@ -119,33 +109,43 @@ static struct circ_buf fast_buf;
 
 static char table[N_GRIDS];
 
-/* Draw the board into draw_buffer */
-static int draw_board(char *table)
+/* Insert the whole chess board into the kfifo buffer */
+static void produce_board(void)
 {
-    int i = 0, k = 0;
-    draw_buffer[i++] = '\n';
-    smp_wmb();
-    draw_buffer[i++] = '\n';
-    smp_wmb();
+    unsigned int len = kfifo_in(&rx_fifo, table, sizeof(table));
+    if (unlikely(len < sizeof(table)) && printk_ratelimit())
+        pr_warn("%s: %zu bytes dropped\n", __func__, sizeof(table) - len);
 
-    while (i < DRAWBUFFER_SIZE) {
-        for (int j = 0; j < (BOARD_SIZE << 1) - 1 && k < N_GRIDS; j++) {
-            draw_buffer[i++] = j & 1 ? '|' : table[k++];
-            smp_wmb();
-        }
-        draw_buffer[i++] = '\n';
-        smp_wmb();
-        for (int j = 0; j < (BOARD_SIZE << 1) - 1; j++) {
-            draw_buffer[i++] = '-';
-            smp_wmb();
-        }
-        draw_buffer[i++] = '\n';
-        smp_wmb();
-    }
-
-
-    return 0;
+    pr_debug("kxo: %s: in %u/%u bytes\n", __func__, len, kfifo_len(&rx_fifo));
 }
+
+// /* Draw the board into draw_buffer */
+// static int draw_board(char *table)
+// {
+//     int i = 0, k = 0;
+//     draw_buffer[i++] = '\n';
+//     smp_wmb();
+//     draw_buffer[i++] = '\n';
+//     smp_wmb();
+
+//     while (i < DRAWBUFFER_SIZE) {
+//         for (int j = 0; j < (BOARD_SIZE << 1) - 1 && k < N_GRIDS; j++) {
+//             draw_buffer[i++] = j & 1 ? '|' : table[k++];
+//             smp_wmb();
+//         }
+//         draw_buffer[i++] = '\n';
+//         smp_wmb();
+//         for (int j = 0; j < (BOARD_SIZE << 1) - 1; j++) {
+//             draw_buffer[i++] = '-';
+//             smp_wmb();
+//         }
+//         draw_buffer[i++] = '\n';
+//         smp_wmb();
+//     }
+
+
+//     return 0;
+// }
 
 /* Clear all data from the circular buffer fast_buf */
 static void fast_buf_clear(void)
@@ -178,9 +178,9 @@ static void drawboard_work_func(struct work_struct *w)
     }
     read_unlock(&attr_obj.lock);
 
-    mutex_lock(&producer_lock);
-    draw_board(table);
-    mutex_unlock(&producer_lock);
+    // mutex_lock(&producer_lock);
+    // draw_board(table);
+    // mutex_unlock(&producer_lock);
 
     /* Store data to the kfifo buffer */
     mutex_lock(&consumer_lock);
@@ -349,9 +349,9 @@ static void timer_handler(struct timer_list *__timer)
             pr_info("kxo: [CPU#%d] Drawing final board\n", cpu);
             put_cpu();
 
-            mutex_lock(&producer_lock);
-            draw_board(table);
-            mutex_unlock(&producer_lock);
+            // mutex_lock(&producer_lock);
+            // draw_board(table);
+            // mutex_unlock(&producer_lock);
 
             /* Store data to the kfifo buffer */
             mutex_lock(&consumer_lock);
@@ -399,6 +399,7 @@ static ssize_t kxo_read(struct file *file,
 
     do {
         ret = kfifo_to_user(&rx_fifo, buf, count, &read);
+
         if (unlikely(ret < 0))
             break;
         if (read)
@@ -415,6 +416,48 @@ static ssize_t kxo_read(struct file *file,
 
     return ret ? ret : read;
 }
+
+// static ssize_t kxo_read(struct file *file,
+//                         char __user *buf,
+//                         size_t count,
+//                         loff_t *ppos)
+// {
+//     size_t total = N_GRIDS;  /* table 的總長度 */
+//     size_t remaining;
+//     ssize_t ret;
+
+//     pr_debug("kxo: %s(%p, %zd, %lld)\n", __func__, buf, count, *ppos);
+
+//     /* 檢查 buf 的使用權限 */
+//     if (!access_ok(buf, count))
+//         return -EFAULT;
+
+//     if (mutex_lock_interruptible(&read_lock))
+//         return -ERESTARTSYS;
+
+//     /* 計算剩餘未讀的字元數量 */
+//     remaining = (*ppos < total) ? total - *ppos : 0;
+//     if (remaining == 0) {
+//         mutex_unlock(&read_lock);
+//         return 0;  /* 已到達 EOF */
+//     }
+
+//     /* 調整 count，避免讀取超過剩餘內容 */
+//     if (count > remaining)
+//         count = remaining;
+
+//     /* 將 table 中從 *ppos 起始 count 個字元複製到使用者空間 */
+//     if (copy_to_user(buf, table + *ppos, count)) {
+//         mutex_unlock(&read_lock);
+//         return -EFAULT;
+//     }
+//     *ppos += count;  /* 更新讀取偏移量 */
+//     ret = count;
+
+//     pr_debug("kxo: %s: read %zd bytes, new offset %lld\n", __func__, count,
+//     *ppos); mutex_unlock(&read_lock); return ret;
+// }
+
 
 static atomic_t open_cnt;
 
