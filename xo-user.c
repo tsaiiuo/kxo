@@ -8,6 +8,7 @@
 #include <sys/ioctl.h>
 #include <sys/select.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 #include "game.h"
 
@@ -88,9 +89,22 @@ static void listen_keyboard_handler(void)
     close(attr_fd);
 }
 
+static void get_timestamp(char *buf, size_t len)
+{
+    time_t t = time(NULL);
+    struct tm tm;
+    if (!buf)
+        return;
+    localtime_r(&t, &tm);
+    /* format：YYYY-MM-DD HH:MM:SS */
+    strftime(buf, len, "%Y-%m-%d %H:%M:%S", &tm);
+}
+
+
 static int draw_board(char *table)
 {
     int i = 0, k = 0;
+
     draw_buffer[i++] = '\n';
     draw_buffer[i++] = '\n';
 
@@ -161,7 +175,9 @@ int main(int argc, char *argv[])
     int max_fd = device_fd > STDIN_FILENO ? device_fd : STDIN_FILENO;
     read_attr = true;
     end_attr = false;
+
     char display_buf[DRAWBUFFER_SIZE];
+    char timestr[64];
 
     while (!end_attr) {
         FD_ZERO(&readset);
@@ -179,12 +195,15 @@ int main(int argc, char *argv[])
             listen_keyboard_handler();
         } else if (read_attr && FD_ISSET(device_fd, &readset)) {
             FD_CLR(device_fd, &readset);
-            // printf("\033[H\033[J"); /* ASCII escape code to clear the screen
+            printf("\033[H\033[J"); /* ASCII escape code to clear the screen
             // */
             read(device_fd, display_buf, DRAWBUFFER_SIZE);
 
             draw_board(display_buf);
             printf("%s", draw_buffer);
+
+            get_timestamp(timestr, sizeof(timestr));
+            printf("Current time: %s\n\n", timestr);
         }
     }
 
