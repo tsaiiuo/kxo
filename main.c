@@ -3,6 +3,7 @@
 #include <linux/cdev.h>
 #include <linux/circ_buf.h>
 #include <linux/interrupt.h>
+#include <linux/ioctl.h>
 #include <linux/kfifo.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -16,6 +17,7 @@
 #include "game.h"
 #include "mcts.h"
 #include "negamax.h"
+#include "record.h"
 
 MODULE_LICENSE("Dual MIT/GPL");
 MODULE_AUTHOR("National Cheng Kung University, Taiwan");
@@ -31,6 +33,10 @@ MODULE_DESCRIPTION("In-kernel Tic-Tac-Toe game engine");
 #define DEV_NAME "kxo"
 
 #define NR_KMLDRV 1
+
+#define IOCTL_READ_SIZE 0
+
+#define IOCTL_READ_LIST 1
 
 static int delay = 100; /* time (in ms) to generate an event */
 
@@ -80,7 +86,7 @@ static int major;
 static struct class *kxo_class;
 static struct cdev kxo_cdev;
 
-static char draw_buffer[DRAWBUFFER_SIZE];
+// static char draw_buffer[DRAWBUFFER_SIZE];
 
 /* Data are stored into a kfifo buffer before passing them to the userspace */
 static DECLARE_KFIFO_PTR(rx_fifo, unsigned char);
@@ -119,34 +125,6 @@ static void produce_board(void)
     pr_debug("kxo: %s: in %u/%u bytes\n", __func__, len, kfifo_len(&rx_fifo));
 }
 
-// /* Draw the board into draw_buffer */
-// static int draw_board(char *table)
-// {
-//     int i = 0, k = 0;
-//     draw_buffer[i++] = '\n';
-//     smp_wmb();
-//     draw_buffer[i++] = '\n';
-//     smp_wmb();
-
-//     while (i < DRAWBUFFER_SIZE) {
-//         for (int j = 0; j < (BOARD_SIZE << 1) - 1 && k < N_GRIDS; j++) {
-//             draw_buffer[i++] = j & 1 ? '|' : table[k++];
-//             smp_wmb();
-//         }
-//         draw_buffer[i++] = '\n';
-//         smp_wmb();
-//         for (int j = 0; j < (BOARD_SIZE << 1) - 1; j++) {
-//             draw_buffer[i++] = '-';
-//             smp_wmb();
-//         }
-//         draw_buffer[i++] = '\n';
-//         smp_wmb();
-//     }
-
-
-//     return 0;
-// }
-
 /* Clear all data from the circular buffer fast_buf */
 static void fast_buf_clear(void)
 {
@@ -178,10 +156,6 @@ static void drawboard_work_func(struct work_struct *w)
     }
     read_unlock(&attr_obj.lock);
 
-    // mutex_lock(&producer_lock);
-    // draw_board(table);
-    // mutex_unlock(&producer_lock);
-
     /* Store data to the kfifo buffer */
     mutex_lock(&consumer_lock);
     produce_board();
@@ -212,8 +186,10 @@ static void ai_one_work_func(struct work_struct *w)
 
     smp_mb();
 
-    if (move != -1)
+    if (move != -1) {
+        record_board_update(move);
         WRITE_ONCE(table[move], 'O');
+    }
 
     WRITE_ONCE(turn, 'X');
     WRITE_ONCE(finish, 1);
@@ -246,9 +222,10 @@ static void ai_two_work_func(struct work_struct *w)
 
     smp_mb();
 
-    if (move != -1)
+    if (move != -1) {
+        record_board_update(move);
         WRITE_ONCE(table[move], 'X');
-
+    }
     WRITE_ONCE(turn, 'O');
     WRITE_ONCE(finish, 1);
     smp_wmb();
@@ -343,15 +320,12 @@ static void timer_handler(struct timer_list *__timer)
         ai_game();
         mod_timer(&timer, jiffies + msecs_to_jiffies(delay));
     } else {
+        record_append_board();
         read_lock(&attr_obj.lock);
         if (attr_obj.display == '1') {
             int cpu = get_cpu();
             pr_info("kxo: [CPU#%d] Drawing final board\n", cpu);
             put_cpu();
-
-            // mutex_lock(&producer_lock);
-            // draw_board(table);
-            // mutex_unlock(&producer_lock);
 
             /* Store data to the kfifo buffer */
             mutex_lock(&consumer_lock);
@@ -364,7 +338,9 @@ static void timer_handler(struct timer_list *__timer)
         if (attr_obj.end == '0') {
             memset(table, ' ',
                    N_GRIDS); /* Reset the table so the game restart */
+            turn = 'O';
             mod_timer(&timer, jiffies + msecs_to_jiffies(delay));
+            record_board_init();
         }
 
         read_unlock(&attr_obj.lock);
@@ -417,47 +393,6 @@ static ssize_t kxo_read(struct file *file,
     return ret ? ret : read;
 }
 
-// static ssize_t kxo_read(struct file *file,
-//                         char __user *buf,
-//                         size_t count,
-//                         loff_t *ppos)
-// {
-//     size_t total = N_GRIDS;  /* table 的總長度 */
-//     size_t remaining;
-//     ssize_t ret;
-
-//     pr_debug("kxo: %s(%p, %zd, %lld)\n", __func__, buf, count, *ppos);
-
-//     /* 檢查 buf 的使用權限 */
-//     if (!access_ok(buf, count))
-//         return -EFAULT;
-
-//     if (mutex_lock_interruptible(&read_lock))
-//         return -ERESTARTSYS;
-
-//     /* 計算剩餘未讀的字元數量 */
-//     remaining = (*ppos < total) ? total - *ppos : 0;
-//     if (remaining == 0) {
-//         mutex_unlock(&read_lock);
-//         return 0;  /* 已到達 EOF */
-//     }
-
-//     /* 調整 count，避免讀取超過剩餘內容 */
-//     if (count > remaining)
-//         count = remaining;
-
-//     /* 將 table 中從 *ppos 起始 count 個字元複製到使用者空間 */
-//     if (copy_to_user(buf, table + *ppos, count)) {
-//         mutex_unlock(&read_lock);
-//         return -EFAULT;
-//     }
-//     *ppos += count;  /* 更新讀取偏移量 */
-//     ret = count;
-
-//     pr_debug("kxo: %s: read %zd bytes, new offset %lld\n", __func__, count,
-//     *ppos); mutex_unlock(&read_lock); return ret;
-// }
-
 
 static atomic_t open_cnt;
 
@@ -471,6 +406,8 @@ static int kxo_open(struct inode *inode, struct file *filp)
         turn = 'O';
         finish = 1;
         memset(table, ' ', N_GRIDS);
+        record_init();
+        record_board_init();
     }
     write_unlock(&attr_obj.lock);
     if (atomic_inc_return(&open_cnt) == 1)
@@ -493,13 +430,31 @@ static int kxo_release(struct inode *inode, struct file *filp)
     return 0;
 }
 
-static const struct file_operations kxo_fops = {
-    .read = kxo_read,
-    .llseek = no_llseek,
-    .open = kxo_open,
-    .release = kxo_release,
-    .owner = THIS_MODULE,
-};
+static long kxo_ioctl(struct file *flip, unsigned int cmd, unsigned long arg)
+{
+    int ret;
+    switch (cmd & 1) {
+    case IOCTL_READ_SIZE:
+        ret = record_get_size();
+        pr_info("kxo_ioctl: the size is %d\n", ret);
+        break;
+    case IOCTL_READ_LIST:
+        uint64_t record = record_get_board(cmd >> 1);
+        ret = copy_to_user((void *) arg, &record, 8);
+        pr_info("kxo_ioctl: read list\n");
+        break;
+    default:
+        ret = -ENOTTY;
+    }
+    return ret;
+}
+
+static const struct file_operations kxo_fops = {.read = kxo_read,
+                                                .llseek = no_llseek,
+                                                .open = kxo_open,
+                                                .release = kxo_release,
+                                                .owner = THIS_MODULE,
+                                                .unlocked_ioctl = kxo_ioctl};
 
 static int __init kxo_init(void)
 {
@@ -563,7 +518,8 @@ static int __init kxo_init(void)
         ret = -ENOMEM;
         goto error_cdev;
     }
-
+    record_init();
+    record_board_init();
     negamax_init();
     mcts_init();
     memset(table, ' ', N_GRIDS);
