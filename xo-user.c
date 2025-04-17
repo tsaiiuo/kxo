@@ -1,25 +1,21 @@
 #include <fcntl.h>
 #include <getopt.h>
 #include <stdbool.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
 #include <sys/select.h>
 #include <termios.h>
 #include <unistd.h>
+
 #include "game.h"
 
 #define XO_STATUS_FILE "/sys/module/kxo/initstate"
 #define XO_DEVICE_FILE "/dev/kxo"
 #define XO_DEVICE_ATTR_FILE "/sys/class/kxo/kxo/kxo_state"
 
-#define IOCTL_READ_SIZE 0
-
-#define IOCTL_READ_LIST 1
-
 static char draw_buffer[DRAWBUFFER_SIZE];
+// static char table[N_GRIDS];
 
 static bool status_check(void)
 {
@@ -105,46 +101,8 @@ static int draw_board(char *table)
         draw_buffer[i++] = '\n';
     }
 
+
     return 0;
-}
-
-void print_record(uint64_t record)
-{
-    uint64_t record_size = record;
-
-    printf("Moves: ");
-
-    for (int i = 0; record_size; i += 1, record_size = record_size >> 4) {
-        unsigned int move = record_size & 15;
-        char turn = i & 1 ? 'X' : 'O';
-        printf("[%c] ", turn);
-        printf("%c%u", 'A' + (move >> 2), move & 3);
-
-        if (record_size >> 4)
-            printf(" -> ");
-    }
-    puts("");
-}
-
-
-
-void show_record(int device_fd)
-{
-    int size = ioctl(device_fd, IOCTL_READ_SIZE, 0);
-    if (size < 0) {
-        puts("Read board record fail");
-        return;
-    }
-
-    for (int i = 0; i < size; i++) {
-        uint64_t record;
-        if (ioctl(device_fd, (((unsigned) i) << 1) | IOCTL_READ_LIST,
-                  &record)) {
-            puts("Read board record fail");
-            return;
-        }
-        print_record(record);
-    }
 }
 
 int main(int argc, char *argv[])
@@ -155,6 +113,8 @@ int main(int argc, char *argv[])
     raw_mode_enable();
     int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
     fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
+
+
 
     fd_set readset;
     int device_fd = open(XO_DEVICE_FILE, O_RDONLY);
@@ -181,7 +141,17 @@ int main(int argc, char *argv[])
             FD_CLR(device_fd, &readset);
             printf("\033[H\033[J"); /* ASCII escape code to clear the screen */
             read(device_fd, display_buf, DRAWBUFFER_SIZE);
-
+            // ssize_t nread = read(device_fd, table, sizeof(table));
+            // if (nread < 0) {
+            //     perror("read");
+            //     close(device_fd);
+            //     exit(1);
+            // }
+            // if (nread != N_GRIDS) {
+            //     fprintf(stderr, "Incomplete board data read: %zd bytes\n",
+            //     nread); close(device_fd); exit(1);
+            // }
+            // printf("%s", table);
             draw_board(display_buf);
             printf("%s", draw_buffer);
         }
@@ -189,7 +159,7 @@ int main(int argc, char *argv[])
 
     raw_mode_disable();
     fcntl(STDIN_FILENO, F_SETFL, flags);
-    show_record(device_fd);
+
     close(device_fd);
 
     return 0;
